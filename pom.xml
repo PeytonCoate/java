@@ -73,7 +73,12 @@
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcpkix-jdk18on</artifactId>
             <version>1.76</version>
-    </dependency>
+        </dependency>
 
+        <dependency>
+            <groupId>de.mkammerer</groupId>
+            <artifactId>argon2-jvm</artifactId>
+            <version>2.10.1</version>
+        </dependency>
     </dependencies>
 </project>
