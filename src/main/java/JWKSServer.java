@@ -4,8 +4,6 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
-
 import org.jose4j.jwk.JsonWebKeySet;
 import org.jose4j.jwk.RsaJsonWebKey;
 import org.jose4j.jwk.RsaJwkGenerator;
@@ -178,84 +176,97 @@ public class JWKSServer {
                 t.sendResponseHeaders(405, -1); // 405 Method Not Allowed
                 return;
             }
-/* 
+
             String requestBody = Utils.convertStreamToString(t.getRequestBody());
+            System.out.println(requestBody);
             String[] parts = requestBody.split(":");
-            String username = parts[1].split(",")[0].replaceAll("\"", "").trim();
-            String userPassword = parts[2].replaceAll("\"", "").trim();
+            String userPassword = parts[1].split(",")[0].replaceAll("\"", "").trim();
+            String username = parts[2].replace("}", "").replaceAll("\"", "").trim();
+
+            System.out.println(username);
+            System.out.println(userPassword);
+            String requestIp = t.getRemoteAddress().getAddress().getHostAddress();
 
             try (Connection conn = DriverManager.getConnection(url, username, userPassword)) {
-                String sql = "SELECT * FROM users WHERE user_id = ? AND password_hash = ?";
+                String sql = "SELECT id, password_hash FROM users WHERE username = ?";
                 
                 try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                    pstmt.setString(1, user_id);
-                    pstmt.setString(2, userPassword);
+                    pstmt.setString(1, username);
                     
                     try (ResultSet rs = pstmt.executeQuery()) {
                         if (rs.next()) {
-                            // User authentication successful
-                            // Do something
+                            String storedPasswordHash = rs.getString("password_hash");
+                            Argon2 argon2 = Argon2Factory.create();
+                            if (argon2.verify(storedPasswordHash, userPassword)) {
+                                System.out.println("success!");
+                                int userId = rs.getInt("id");
+                                JwtClaims claims = new JwtClaims();
+                                claims.setGeneratedJwtId();
+                                claims.setIssuedAtToNow();
+                                claims.setSubject("sampleUser");
+                                claims.setExpirationTimeMinutesInTheFuture(60);
+                    
+                                JsonWebSignature jws = new JsonWebSignature();
+                                jws.setKeyIdHeaderValue(jwk.getKeyId());
+                                jws.setKey(jwk.getPrivateKey());
+                    
+                                // Check for the "expired" query parameter
+                                if (t.getRequestURI().getQuery() != null && t.getRequestURI().getQuery().contains("expired=true")) {
+                                    NumericDate expirationTime = NumericDate.now();
+                                    expirationTime.addSeconds(-60 * 60); // Subtract 60 minutes
+                                    claims.setExpirationTime(expirationTime);
+                                    jws.setKeyIdHeaderValue(expiredJWK.getKeyId());
+                                    jws.setKey(expiredJWK.getPrivateKey());
+                                }
+                    
+                                jws.setPayload(claims.toJson());
+                                jws.setAlgorithmHeaderValue(AlgorithmIdentifiers.RSA_USING_SHA256);
+                    
+                                String jwt = "";
+                                try {
+                                    jwt = jws.getCompactSerialization();
+                                } catch (JoseException e) {
+                                    e.printStackTrace();
+                                    t.sendResponseHeaders(500, -1); // 500 Internal Server Error
+                                    return;
+                                }
+                    
+                                logAuthRequest(requestIp, userId, conn);
+                    
+                                t.sendResponseHeaders(200, jwt.length());
+                                OutputStream os = t.getResponseBody();
+                                os.write(jwt.getBytes());
+                                os.close();
+                            }
+                            else{
+                                logAuthRequest(requestIp, -1, conn);
+                                t.sendResponseHeaders(401, -1);
+                            }
                         } else {
-                            // User authentication failed
-                            // Do something else
+                            logAuthRequest(requestIp, -1, conn);
+                            t.sendResponseHeaders(404, -1);
                         }
+                    } catch (SQLException e) {
+                        e.printStackTrace();
                     }
+                    
+                } catch (SQLException e) {
+                    e.printStackTrace();
                 }
+                
+
             } catch (SQLException e) {
                 e.printStackTrace();
             }
-*/
-            JwtClaims claims = new JwtClaims();
-            claims.setGeneratedJwtId();
-            claims.setIssuedAtToNow();
-            claims.setSubject("sampleUser");
-            claims.setExpirationTimeMinutesInTheFuture(60);
-
-            JsonWebSignature jws = new JsonWebSignature();
-            jws.setKeyIdHeaderValue(jwk.getKeyId());
-            jws.setKey(jwk.getPrivateKey());
-
-            // Check for the "expired" query parameter
-            if (t.getRequestURI().getQuery() != null && t.getRequestURI().getQuery().contains("expired=true")) {
-                NumericDate expirationTime = NumericDate.now();
-                expirationTime.addSeconds(-60 * 60); // Subtract 60 minutes
-                claims.setExpirationTime(expirationTime);
-                jws.setKeyIdHeaderValue(expiredJWK.getKeyId());
-                jws.setKey(expiredJWK.getPrivateKey());
-            }
-
-            jws.setPayload(claims.toJson());
-            jws.setAlgorithmHeaderValue(AlgorithmIdentifiers.RSA_USING_SHA256);
-
-            String jwt = "";
-            try {
-                jwt = jws.getCompactSerialization();
-            } catch (JoseException e) {
-                e.printStackTrace();
-                t.sendResponseHeaders(500, -1); // 500 Internal Server Error
-                return;
-            }
-            String requestIp = t.getRemoteAddress().getAddress().getHostAddress();
-            int userId = extractUserIdFromRequest(t);
-            logAuthRequest(requestIp, userId);
-
-            t.sendResponseHeaders(200, jwt.length());
-            OutputStream os = t.getResponseBody();
-            os.write(jwt.getBytes());
-            os.close();
         }
     }
-    //TODO: actually extract user ID via parsing.
-    private static int extractUserIdFromRequest(HttpExchange exchange) {
-        return 123; // Placeholder
-    }
+
 
     // Method to log authentication requests
-    public static void logAuthRequest(String requestIp, int userId) {
+    public static void logAuthRequest(String requestIp, int userId, Connection conn) {
         String sql = "INSERT INTO auth_logs (request_ip, user_id) VALUES (?, ?)";
 
-        try (Connection conn = DriverManager.getConnection(url);
-             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+        try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
             
             // Set parameters
             pstmt.setString(1, requestIp);
@@ -278,16 +289,18 @@ public class JWKSServer {
             if ("POST".equals(exchange.getRequestMethod())) {
                 // Parse JSON request body
                 String requestBody = Utils.convertStreamToString(exchange.getRequestBody());
+                System.out.println(requestBody);
                 String[] parts = requestBody.split(":");
-                String username = parts[1].split(",")[0].replaceAll("\"", "").trim();
-                String email = parts[2].replaceAll("\"", "").trim();
+                String email = parts[1].split(",")[0].replaceAll("\"", "").trim();
+                String username = parts[2].replace("}", "").replaceAll("\"", "").trim();
 
                 // Generate secure password using UUIDv4
                 String password = UUID.randomUUID().toString();
                 System.out.println(password);
                 //Hash password using Argon2
-                String hashedPassword = hashPassword(password);
-
+                Argon2 argon2 = Argon2Factory.create();
+                String hashedPassword = argon2.hash(10, 65536, 1, password);
+                System.out.println(hashedPassword);
                 try {
                     insertUser(username, hashedPassword, email);
                 } catch (SQLException e) {
@@ -298,14 +311,13 @@ public class JWKSServer {
 
  
                 //JSON response
-                String response = "{\"password\": \"" + hashedPassword + "\"}";
+                String response = "{\"password\": \"" + password + "\"}";
 
                   //response headers
                 exchange.getResponseHeaders().set("Content-Type", "application/json");
 
                 // Status code
-                int statusCode = hashedPassword != null ? 200 : 500;
-                String statusMessage = hashedPassword != null ? "OK" : "Internal Server Error";
+                int statusCode = password != null ? 200 : 500;
                 exchange.sendResponseHeaders(statusCode, response.getBytes().length);
                 try (OutputStream os = exchange.getResponseBody()) {
                     os.write(response.getBytes());
@@ -315,12 +327,6 @@ public class JWKSServer {
                 exchange.sendResponseHeaders(405, -1);
             }
         }
-    }
-    private static String hashPassword(String password) {
-        //Argon2 argon2 = Argon2Factory.create();
-        //String hashedPassword = argon2.hash(10, 65536, 1, password);
-        //return DigestUtils.sha256Hex(password); TODO: Fix argon2 hash.
-        return password;
     }
 
 
@@ -343,7 +349,6 @@ public class JWKSServer {
                 pstmt.setString(2, hashedPassword);
                 pstmt.setString(3, email);
                 pstmt.executeUpdate();
-                System.out.println("lole");
             }
         }
     }
